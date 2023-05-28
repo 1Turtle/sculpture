@@ -211,6 +211,10 @@ local log_limit_upper, log_limit_lower = 1,log_offset
 local log = {}
 
 local original_scroll = term.scroll
+--- Scrolls in the terminal AND the logs.
+-- This only works with positive numbers. Negative ones will corrupt the results.
+--
+-- @param amount number The amount it should scroll.
 local function log_scroll(amount)
     
     for i=1, amount do
@@ -226,6 +230,9 @@ local function log_scroll(amount)
 end
 
 local original_write = term.write
+--- Writes to the terminal AND logs it.
+--
+-- @param line string The line to log.
 local function log_write(line)
     local x,y = term.getCursorPos()
     y = y-log_offset
@@ -681,12 +688,91 @@ end
 
 -- Actual start of program
 local model = {}
+local model_w, model_h, model_d = 1, 1, 1
+local template = {
+    label = "Unknown",
+    tooltip = "Generated with 1Turtle/sculpture",
+    isButton = false,
+    collideWhenOn = true,
+    collideWhenOff = true,
+    lightLevel = 0,
+    redstoneLevel = 0,
+    shapesOff = {},
+    shapesOn = textutils.empty_json_array
+}
 
--- Space sizes
+--- Makes a copy of the template for a new empty 3dj model.
+--
+-- @param name string The name of the model.
+-- @param block_x number The x position of this model for the complete sculpture.
+-- @param block_y number The y position of this model for the complete sculpture.
+-- @param block_z number The z position of this model for the complete sculpture.
+-- @return table 3dj The new 3dj model.
+local function new3dj(name, block_x, block_y, block_z)
+    local newModel = {}
+
+    for k,v in pairs(template) do
+        newModel[k] = (type(v) == "table") and {} or v
+    end
+
+    newModel.label = ("%s | (%d,%d,%d)"):format(name or newModel.label, block_x, block_y, block_z)
+
+    return newModel
+end
+
+--- Converts a given color to a string representing it in hex.
+--
+-- @param r number The value for red.
+-- @param g number The value for green.
+-- @param b number The value for blue.
+--
+-- @return string hex The hex value of the color.
+local function toHex(r, g, b)
+    return ('%x'):format(0xFF0000*r + 0xFF00*g + 0xFF*b)
+end
+
+--- Adds a new voxel to the model.
+--
+-- @param x number The x position of the voxel in the model.
+-- @param y number The y position of the voxel in the model.
+-- @param z number The z position of the voxel in the model.
+-- @param tint string The tint color of the new voxel.
+local function newVoxel(x, y, z, tint)
+    if not model[x] then model[x] = {} end
+    if not model[y] then model[y] = {} end
+    if not model[z] then model[z] = {} end
+
+    if x > model_w then model_w = x end
+    if y > model_h then model_h = y end
+    if z > model_d then model_d = z end
+
+    model[x][y][z] = tint
+end
+
+--- Generates a new shape representing a voxel for the .3dj format.
+-- The shape will have a size of 1 in every direction.
+--
+-- @param x number The x position of the shape.
+-- @param y number The x position of the shape.
+-- @param z number The x position of the shape.
+-- @param tint string The tint color of the new shape.
+--
+-- @return table shape The new shape.
+local function newShape(x, y, z, tint)
+    return { bounds = {x-1, y-1, z-1, x, y, z}, texture = "sc-peripherals:block/white", tint = tint }
+end
+
+-- Sizes, offsets and bounds for the models and textures
 local space_size = {
     head = {
-        size = vector.new(16, 16, 16),
-        offset = vector.new(4,1,4)
+        offset = vector.new(5,1,5),
+        texture = {
+            size_front = vector.new(8,8),
+            size_side = vector.new(8,8),
+            size_top = vector.new(8,8),
+
+            front = vector.new(9,9)
+        }
     },
     normal = {
         size = vector.new(16, 32, 16),
@@ -694,25 +780,67 @@ local space_size = {
     }
 }
 
--- Generate space
-for x=1, space_size[mode].size.x do
-    for y=1, space_size[mode].size.y do
-        for z=1, space_size[mode].size.z do
-            if not model[x] then
-                model[x] = {}
-            end
-            if not model[x][y] then
-                model[x][y] = {}
-            end
+-- Generate Head
+if mode == "head" then
+    for y=1, 8 do
+        for x=1, 8 do
+            local pos_x, pos_y, pos_z = x+space_size[mode].offset.x-1, y+space_size[mode].offset.y, space_size[mode].offset.z
 
-            model[x][y][z] = ' '
+            -- Prepare space for voxel if needed
+            if not model[pos_x]                 then model[pos_x]               = {} end
+            if not model[pos_x][pos_y]          then model[pos_x][pos_y]        = {} end
+            if not model[pos_x][pos_y][pos_z]   then model[pos_x][pos_y][pos_z] = {} end
+
+            -- Place voxel
+            newVoxel(pos_x, pos_y, pos_z, toHex(skin:get_pixel(
+                space_size[mode].texture.front.x+x-1,
+                space_size[mode].texture.front.y+y-1
+            ):unpack()))
         end
     end
 end
 
--- Generate Head
-if mode == "head" then
-    print(("pixel 12,12 has the colors r:%d g:%d b:%d"):format(skin:get_pixel(12,12):unpack()))
+-- Generate 3dj file(s)
+local jd3 = {}
+
+model_w = math.floor(model_w/16+0.8)
+model_h = math.floor(model_h/16+0.8)
+model_d = math.floor(model_d/16+0.8)
+
+-- Block by block
+for block_x=1,model_w do
+    for block_y=1,model_h do
+        for block_z=1,model_d do
+            local part = new3dj(nil, block_x, block_y, block_z)
+            table.insert(jd3, part)
+
+            -- Voxel by voxel
+            for x=(block_x-1)*16, block_x*16 do
+                for y=(block_y-1)*16, block_y*16 do
+                    for z=(block_z-1)*16, block_z*16 do
+                        if model[x] and model[x][y] and model[x][y][z] then
+                            table.insert(part.shapesOff, newShape(
+                                x%16,
+                                y%16,
+                                z%16,
+                                model[x][y][z]
+                            ))
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+for _, model in ipairs(jd3) do
+    local formated = textutils.serialiseJSON(model)
+
+    local file = fs.open(destination, 'w')
+    file.write(formated)
+    file.close()
+
+    print(("Stored model \'%s\' at \'%s\'."):format(model.label, destination))
 end
 
 -- Save log file
@@ -737,3 +865,11 @@ if log_output then
     term.setTextColor(colors.pink)
     print(("Log has been saved to \'%s\'."):format(log_output))
 end
+
+--[[
+    @todo add tooltip option
+    @todo add name option
+
+    @todo add more templates for models (like full body)
+    @todo add manipulation for 3dj models (like add, subtract, fuse etc.)
+]]
