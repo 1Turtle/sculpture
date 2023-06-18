@@ -13,10 +13,6 @@ local w,h = term.getSize()
 --- Downloads a given url while running a loading animation.
 -- If completed, the loading bar will update its content to 'OK' or 'FAIL', depending on its result.
 -- Will return a boolean, whenever it was successfull or not and then either the gotten content or the error message.
---
----@param url string The url to download.
----@return boolean success Whenever it was successfull or not.
----@return string content The returned content or error message.
 local function downloadFile(url, isBinary)
     if not http then
         return false, "The http API is not available but needed"
@@ -213,8 +209,6 @@ local log = {}
 local original_scroll = term.scroll
 --- Scrolls in the terminal AND the logs.
 -- This only works with positive numbers. Negative ones will corrupt the results.
---
--- @param amount number The amount it should scroll.
 local function log_scroll(amount)
     
     for i=1, amount do
@@ -384,13 +378,13 @@ You are using it right now.]],
 
                 -- Setup description
                 local description_begin = 9+option_len
-                local description = strings.wrap(body.description:sub(1, (body.description:find('\n') or #body.description+1)-1), w-description_begin)
+                local description_multiline = strings.wrap(body.description:sub(1, (body.description:find('\n') or #body.description+1)-1), w-description_begin)
                 
                 -- Print out description aligned
                 term.setTextColor(colors.lightGray)
                 local _,y = term.getCursorPos()
                 scroll = false
-                for i,line in ipairs(description) do
+                for i,descprition_line in ipairs(description_multiline) do
                     local ypos = y+i-1
                     if ypos > h then
                         ypos = h
@@ -398,7 +392,7 @@ You are using it right now.]],
                         scroll = true
                     end
                     term.setCursorPos(description_begin, ypos)
-                    term.write(line)
+                    term.write(descprition_line)
                 end
 
                 -- Reposition cursor for next option
@@ -549,8 +543,8 @@ Cannot be set within a local image file. (@see -f, --file)]],
                             return false, ("Could not download player skin: %s"):format(skin_data)
                         end
 
-                        local success, loadedPng = pcall(pngImage, nil, { input=skin_data })
-                        if not success then
+                        local png_load_success, loadedPng = pcall(pngImage, nil, { input=skin_data })
+                        if not png_load_success then
                             return false, ("Could not load provided skin: %s"):format(loadedPng)
                         end
                     
@@ -687,80 +681,8 @@ end
 -- @todo Check if all needed arguments were provided!
 
 -- Actual start of program
-local model = {}
+local models = {}
 local model_w, model_h, model_d = 1, 1, 1
-local template = {
-    label = "Unknown",
-    tooltip = "Generated with 1Turtle/sculpture",
-    isButton = false,
-    collideWhenOn = true,
-    collideWhenOff = true,
-    lightLevel = 0,
-    redstoneLevel = 0,
-    shapesOff = {},
-    shapesOn = textutils.empty_json_array
-}
-
---- Makes a copy of the template for a new empty 3dj model.
---
--- @param name string The name of the model.
--- @param block_x number The x position of this model for the complete sculpture.
--- @param block_y number The y position of this model for the complete sculpture.
--- @param block_z number The z position of this model for the complete sculpture.
--- @return table 3dj The new 3dj model.
-local function new3dj(name, block_x, block_y, block_z)
-    local newModel = {}
-
-    for k,v in pairs(template) do
-        newModel[k] = (type(v) == "table") and {} or v
-    end
-
-    newModel.label = ("%s | (%d,%d,%d)"):format(name or newModel.label, block_x, block_y, block_z)
-
-    return newModel
-end
-
---- Converts a given color to a string representing it in hex.
---
--- @param r number The value for red.
--- @param g number The value for green.
--- @param b number The value for blue.
---
--- @return string hex The hex value of the color.
-local function toHex(r, g, b)
-    return ('%x'):format(0xFF0000*r + 0xFF00*g + 0xFF*b)
-end
-
---- Adds a new voxel to the model.
---
--- @param x number The x position of the voxel in the model.
--- @param y number The y position of the voxel in the model.
--- @param z number The z position of the voxel in the model.
--- @param tint string The tint color of the new voxel.
-local function newVoxel(x, y, z, tint)
-    if not model[x] then model[x] = {} end
-    if not model[y] then model[y] = {} end
-    if not model[z] then model[z] = {} end
-
-    if x > model_w then model_w = x end
-    if y > model_h then model_h = y end
-    if z > model_d then model_d = z end
-
-    model[x][y][z] = tint
-end
-
---- Generates a new shape representing a voxel for the .3dj format.
--- The shape will have a size of 1 in every direction.
---
--- @param x number The x position of the shape.
--- @param y number The x position of the shape.
--- @param z number The x position of the shape.
--- @param tint string The tint color of the new shape.
---
--- @return table shape The new shape.
-local function newShape(x, y, z, tint)
-    return { bounds = {x-1, y-1, z-1, x, y, z}, texture = "sc-peripherals:block/white", tint = tint }
-end
 
 -- Sizes, offsets and bounds for the models and textures
 local space_size = {
@@ -771,7 +693,7 @@ local space_size = {
             size_side = vector.new(8,8),
             size_top = vector.new(8,8),
 
-            front = vector.new(9,9)
+            off = vector.new(1,1)
         }
     },
     normal = {
@@ -780,67 +702,177 @@ local space_size = {
     }
 }
 
--- Generate Head
-if mode == "head" then
-    for y=1, 8 do
-        for x=1, 8 do
-            local pos_x, pos_y, pos_z = x+space_size[mode].offset.x-1, y+space_size[mode].offset.y, space_size[mode].offset.z
+--- Makes a copy of the template for a new empty 3dj model.
+local function new3dj(block, name, tooltip)
+    local new_3dj_file = {
+        label = ("%s | {%d,%d,%d}"):format(name or "Unknown", block.x, block.y, block.z),
+        tooltip = "Generated with sculpture.lua",
+        isButton = false,
+        collideWhenOn = true,
+        collideWhenOff = true,
+        lightLevel = 0,
+        redstoneLevel = 0,
+        shapesOff = {},
+        shapesOn = textutils.empty_json_array
+    }
 
-            -- Prepare space for voxel if needed
-            if not model[pos_x]                 then model[pos_x]               = {} end
-            if not model[pos_x][pos_y]          then model[pos_x][pos_y]        = {} end
-            if not model[pos_x][pos_y][pos_z]   then model[pos_x][pos_y][pos_z] = {} end
-
-            -- Place voxel
-            newVoxel(pos_x, pos_y, pos_z, toHex(skin:get_pixel(
-                space_size[mode].texture.front.x+x-1,
-                space_size[mode].texture.front.y+y-1
-            ):unpack()))
-        end
-    end
+    return new_3dj_file
 end
 
--- Generate 3dj file(s)
-local jd3 = {}
+--- Creates a new shape for a .3dj file.
+local function newShape(tint, pos, size)
+    return {tint = tint, texture = "sc-peripherals:block/white", bounds= {
+        pos.x-1,
+        pos.y-1,
+        pos.z-1,
+        size and (pos.x+size.x-1) or pos.x,
+        size and (pos.y+size.y-1) or pos.y,
+        size and (pos.z+size.z-1) or pos.z
+    }}
+end
 
-model_w = math.floor(model_w/16+0.8)
-model_h = math.floor(model_h/16+0.8)
-model_d = math.floor(model_d/16+0.8)
+--- Converts a given color to a string representing it in hex.
+local function toHex(r, g, b)
+    return ('%x'):format(0xFF0000*r + 0xFF00*g + 0xFF*b)
+end
 
--- Block by block
-for block_x=1,model_w do
-    for block_y=1,model_h do
-        for block_z=1,model_d do
-            local part = new3dj(nil, block_x, block_y, block_z)
-            table.insert(jd3, part)
+local function getTint(x, y)
+    return toHex(skin:get_pixel(x,y):unpack())
+end
 
-            -- Voxel by voxel
-            for x=(block_x-1)*16, block_x*16 do
-                for y=(block_y-1)*16, block_y*16 do
-                    for z=(block_z-1)*16, block_z*16 do
-                        if model[x] and model[x][y] and model[x][y][z] then
-                            table.insert(part.shapesOff, newShape(
-                                x%16,
-                                y%16,
-                                z%16,
-                                model[x][y][z]
-                            ))
-                        end
-                    end
-                end
+--- Will generate a "textured surface" using optimized shapes.
+-- The shapes will be optimized using a Greedy Mesh Algorithm.
+local function generateTexturedSurface(uv_x, uv_y, uv_width, uv_height)
+    local shapes = {}
+    local registered = {}
+
+    local function register(begin_x,begin_y, width, height, tint)
+        for y=begin_y, begin_y+height-1 do
+            for x=begin_x, begin_x+width-1 do
+                if not registered[x] then registered[x] = {} end
+                registered[x][y] = tint
             end
         end
     end
+
+    local function isRegistered(x,y)
+        return (registered[x] and registered[x][y]) and true or false
+    end
+
+    -- Search for unused voxel
+    local base_x, base_y = 1, uv_height
+    for y=uv_y, uv_y+uv_height-1 do
+        for x=uv_x, uv_x+uv_width-1 do
+            -- Found one, get optimized size for shape
+            if not isRegistered(x, y) then
+                local tint = getTint(x,y)
+                local width, height = 1, 1
+
+                -- Expand to width
+                for sub_x=x+1, uv_x+uv_width-1 do
+                    if getTint(sub_x, y) == tint and not isRegistered(sub_x, y) then
+                        width = width+1
+                    else break end
+                end
+
+                -- Expand to height
+                for sub_y=y+1, uv_y+uv_height-1 do
+                    local validRow = true
+
+                    -- Check row
+                    for i=x, x+width-1 do
+                        if getTint(i, sub_y) ~= tint or isRegistered(i, sub_y) then
+                            validRow = false
+                            break
+                        end
+                    end
+
+                    if validRow then
+                        height = height+1
+                    else break end
+                end
+
+                -- Register shape
+                local shape = newShape(tint, vector.new(base_x,base_y-height+1,1), vector.new(width, height,1))
+                table.insert(shapes, shape)
+                register(x,y, width, height, tint)
+            end
+
+            base_x = base_x+1
+        end
+        base_y = base_y-1
+        base_x = 1
+    end
+
+    return shapes
 end
 
-for _, model in ipairs(jd3) do
-    local formated = textutils.serialiseJSON(model)
+local function applySurface(model, shapes, x, y, z, rotation)
+    for _,shape in ipairs(shapes) do
+        local x1,y1,z1, x2,y2,z2 = shape.bounds[1], shape.bounds[2], shape.bounds[3], shape.bounds[4], shape.bounds[5], shape.bounds[6]
+
+        if rotation == 'x' then
+            shape.bounds[1] = x+x1-1
+            shape.bounds[2] = y+y1-1
+            shape.bounds[3] = z+z1-1
+
+            shape.bounds[4] = x+x2-1
+            shape.bounds[5] = y+y2-1
+            shape.bounds[6] = z+z2-1
+        elseif rotation == 'z' then
+            shape.bounds[3] = z+x1-1
+            shape.bounds[2] = y+y1-1
+            shape.bounds[1] = x+z1-1
+
+            shape.bounds[6] = z+x2-1
+            shape.bounds[5] = y+y2-1
+            shape.bounds[4] = x+z2-1
+        elseif rotation == 'y' then
+            shape.bounds[1] = x+x1-1
+            shape.bounds[3] = z+y1-1
+            shape.bounds[2] = y+z1-1
+
+            shape.bounds[4] = x+x2-1
+            shape.bounds[6] = z+y2-1
+            shape.bounds[5] = y+z2-1
+        end
+
+        table.insert(model.shapesOff, shape)
+    end
+end
+
+local model = new3dj(vector.new(1,1,1))
+table.insert(models, model)
+
+-- Face
+local shapes = generateTexturedSurface(9, 9, 8, 8)
+applySurface(model, shapes, 5, 1, 5, 'x')
+
+-- x=16 Side
+shapes = generateTexturedSurface(1, 9, 7, 8)
+applySurface(model, shapes, 16-4, 1, 6, 'z')
+
+-- x=1 Side
+shapes = generateTexturedSurface(17, 9, 7, 8)
+applySurface(model, shapes, 5, 1, 6, 'z')
+
+-- Back
+local shapes = generateTexturedSurface(25, 9, 6, 8)
+applySurface(model, shapes, 6, 1, 16-4, 'x')
+
+-- Top
+local shapes = generateTexturedSurface(9, 1, 6, 6)
+applySurface(model, shapes, 6, 8, 6, 'y')
+
+-- Write model(s) to file(s)
+for _, sub_model in ipairs(models) do
+    local formated = textutils.serialiseJSON(sub_model)
 
     local file = fs.open(destination, 'w')
     file.write(formated)
     file.close()
 
-    print(("Stored model \'%s\' at \'%s\'."):format(model.label, destination))
+    print(("Stored model \'%s\' with %d shapes at \'%s\'."):format(sub_model.label, #sub_model.shapesOff, destination))
 end
 
 -- Save log file
@@ -869,6 +901,9 @@ end
 --[[
     @todo add tooltip option
     @todo add name option
+
+    @todo add error catching if -p player doesnt exist
+    @todo fix unsername validation check for -p
 
     @todo add more templates for models (like full body)
     @todo add manipulation for 3dj models (like add, subtract, fuse etc.)
